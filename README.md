@@ -97,8 +97,8 @@ npm run app2   # http://app2.lvh.me:3001
 4. Click **Open App 2 in a new tab ↗**. App 2 (`app2.lvh.me`, a *different* domain)
    signs you in **automatically — no button, no login screen**. That's real cross-domain
    SSO: one login, both apps.
-5. **Log out** from an app ends the FusionAuth SSO session and that app's own session —
-   but **not** the other app's local session (see the single-logout gap below).
+5. **Log out** of App 1. Then reload App 2 — within a few seconds it re-checks FusionAuth,
+   finds the session gone, and logs out too (single logout — see §5).
 
 ### Why App 2 is automatic but App 1 isn't
 
@@ -173,14 +173,39 @@ is why the **default is `tab`**.
 into on the *same site*. It is the wrong tool for cross-domain SSO — use a tab, redirect,
 or popup so the login runs top-level.
 
-### ⚠️ Logout is not propagated (single-logout gap)
+## 5. Single logout (log out one → out everywhere)
 
-Logging out of App 1 ends the *FusionAuth SSO session* and App 1's own session, but **App
-2's local session survives** — App 2 keeps showing "signed in" until its own session
-expires or it re-checks FusionAuth. This PoC implements no logout propagation. Real
-single-logout needs **OIDC Back-Channel Logout** (FusionAuth POSTs a logout token to each
-app, which kills the matching local session) or Front-Channel Logout (subject to the same
-framing/cookie caveats above).
+Logging out of App 1 ends the FusionAuth SSO session and App 1's own session. App 2 still
+has its **own** local session cookie, so it doesn't log out instantly. This PoC closes
+that gap with **silent re-validation** (`REVALIDATE_TTL_MS`, default 5000ms):
+
+- When a signed-in page loads and the local session is older than the TTL, the app does a
+  top-level `prompt=none` re-check against FusionAuth.
+- FusionAuth session still alive → returns a code silently → session refreshed, nothing
+  visible.
+- FusionAuth session gone (someone logged out) → the check can't sign you in → the app is
+  logged out too.
+
+**Verified:** logged into App 1 (`app1.localtest.me`) and App 2 (`app2.lvh.me`), logged
+out of App 1, reloaded App 2 → App 2 re-checked FusionAuth, found no session, and dropped
+to the login page. Single logout across different domains. ✅
+
+**Trade-offs / why it's built this way:**
+
+- **Eventual, not instant.** App 2 logs out on its *next* navigation after the TTL, not
+  the instant App 1 logs out. Lower `REVALIDATE_TTL_MS` = faster propagation but a
+  `prompt=none` redirect round-trip more often.
+- **Why not back-channel logout?** The robust push-based mechanism (OIDC Back-Channel
+  Logout — the IdP POSTs a logout token to each app) is reported unsupported by this
+  FusionAuth: its discovery doc says `"backchannel_logout_supported": false`.
+- **Why not front-channel logout?** FusionAuth *does* advertise
+  `"frontchannel_logout_supported": true`, but it clears sessions via hidden **iframes** —
+  which hit the exact cross-domain third-party-cookie wall described above, so it's
+  unreliable across different domains.
+- On FusionAuth specifically, a failed `prompt=none` re-check lands on the FusionAuth
+  login page (FusionAuth renders its login UI instead of returning
+  `error=login_required` — see the caveat in §3), which is the "you've been logged out"
+  state here.
 
 ## Config reference
 

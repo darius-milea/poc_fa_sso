@@ -17,6 +17,11 @@ const {
   EMBED_APP_URL = "",
   EMBED_MODE = "iframe", // "iframe" (embed) or "tab" (open in a new top-level tab)
   AUTO_SSO = "",
+  // Single-logout via silent re-validation. When a signed-in session is older than this
+  // many ms, the app re-checks FusionAuth with a top-level prompt=none. If the FusionAuth
+  // SSO session is gone (e.g. the user logged out of another app), the check fails and
+  // this app logs out too. Lower = faster propagation but more redirects; 0 disables.
+  REVALIDATE_TTL_MS = "5000",
 } = process.env;
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
@@ -97,6 +102,13 @@ const embedSection = () => {
 app.get("/", (req, res) => {
   const other = OTHER_APP_URL || (PORT == 3000 ? "http://localhost:3001" : "http://localhost:3000");
   if (req.session.user) {
+    // Single-logout: if the local session is stale, silently re-check FusionAuth.
+    // A top-level prompt=none redirect confirms the SSO session still exists; if it was
+    // ended elsewhere, FusionAuth no longer signs us in and we end up logged out here too.
+    const ttl = Number(REVALIDATE_TTL_MS) || 0;
+    if (ttl > 0 && Date.now() - (req.session.validatedAt || 0) > ttl) {
+      return res.redirect("/login?silent=1");
+    }
     res.send(
       page(
         APP_NAME,
@@ -216,6 +228,7 @@ app.get("/oauth-callback", async (req, res) => {
 
     req.session.user = claims;
     req.session.idToken = tokens.id_token;
+    req.session.validatedAt = Date.now(); // for silent re-validation (single logout)
     delete req.session.state;
     delete req.session.codeVerifier;
     res.redirect("/");

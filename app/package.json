@@ -1,0 +1,15 @@
+{
+  "name": "fa-sso-demo-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generic OIDC client used to demo FusionAuth SSO across two apps",
+  "type": "module",
+  "scripts": {
+    "app1": "node --env-file=app1.env server.js",
+    "app2": "node --env-file=app2.env server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  }
+}

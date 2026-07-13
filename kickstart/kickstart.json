@@ -1,0 +1,94 @@
+{
+  "variables": {
+    "adminEmail": "admin@example.com",
+    "adminPassword": "password",
+    "userEmail": "user@example.com",
+    "userPassword": "password",
+    "apiKey": "this-is-a-poc-api-key-change-me",
+    "app1Id": "11111111-1111-1111-1111-111111111111",
+    "app2Id": "22222222-2222-2222-2222-222222222222",
+    "app1Secret": "app1-super-secret-change-me",
+    "app2Secret": "app2-super-secret-change-me",
+    "userId": "33333333-3333-3333-3333-333333333333"
+  },
+  "apiKeys": [
+    {
+      "key": "#{apiKey}",
+      "description": "PoC bootstrap key"
+    }
+  ],
+  "requests": [
+    {
+      "method": "POST",
+      "url": "/api/user/registration",
+      "body": {
+        "user": {
+          "email": "#{adminEmail}",
+          "password": "#{adminPassword}"
+        },
+        "registration": {
+          "applicationId": "#{FUSIONAUTH_APPLICATION_ID}",
+          "roles": ["admin"]
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "url": "/api/application/#{app1Id}",
+      "body": {
+        "application": {
+          "name": "SSO Demo App 1",
+          "oauthConfiguration": {
+            "clientSecret": "#{app1Secret}",
+            "enabledGrants": ["authorization_code", "refresh_token"],
+            "authorizedRedirectURLs": ["http://localhost:3000/oauth-callback"],
+            "logoutURL": "http://localhost:3000/",
+            "requireRegistration": false,
+            "generateRefreshTokens": true
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "url": "/api/application/#{app2Id}",
+      "body": {
+        "application": {
+          "name": "SSO Demo App 2",
+          "oauthConfiguration": {
+            "clientSecret": "#{app2Secret}",
+            "enabledGrants": ["authorization_code", "refresh_token"],
+            "authorizedRedirectURLs": ["http://localhost:3001/oauth-callback"],
+            "logoutURL": "http://localhost:3001/",
+            "requireRegistration": false,
+            "generateRefreshTokens": true
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "url": "/api/user/registration/#{userId}",
+      "body": {
+        "user": {
+          "email": "#{userEmail}",
+          "password": "#{userPassword}",
+          "firstName": "Test",
+          "lastName": "User"
+        },
+        "registration": {
+          "applicationId": "#{app1Id}"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "url": "/api/user/registration/#{userId}",
+      "body": {
+        "registration": {
+          "applicationId": "#{app2Id}"
+        }
+      }
+    }
+  ]
+}

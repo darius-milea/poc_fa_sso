@@ -67,7 +67,8 @@ npm run app2   # http://localhost:3001
 3. You land back on App 1, authenticated (ID-token claims shown).
 4. Open <http://localhost:3001> — **no button, no login screen**. App 2 signs you in
    automatically. That's real SSO: one login, both apps.
-5. **Log out** from either app hits FusionAuth's OIDC logout, ending the shared session.
+5. **Log out** from an app ends the FusionAuth SSO session and that app's own session —
+   but **not** the other app's local session (see the single-logout gap below).
 
 ### Why App 2 is automatic but App 1 isn't
 
@@ -109,14 +110,56 @@ App 1's home page embeds App 2 in an `<iframe>` (driven by `EMBED_APP_URL` in
   embedded app can therefore *only* SSO silently; it can never show the FusionAuth login
   form in-frame.
 
-**Takeaways for real deployments:**
+### ⛔ This iframe pattern does NOT work in production
 
-- Cross-*site* embedding (different registrable domains, e.g. `app1.com` framing
-  `auth.example.com`) makes the FusionAuth session cookie *third-party* — modern
-  browsers block/partition it, so even silent SSO fails. This PoC only works because
-  everything is `localhost`.
-- To support real interactive login from an embedded context, use a **redirect/popup**
-  flow that breaks out of the frame, not an in-frame login page.
+**It only works here because every origin is `localhost`.** Cookies are keyed by host
+(they ignore port), so `localhost:3000`, `:3001`, and `:9011` are all the *same site* →
+every cookie is first-party. Change any of them to a real, different domain and it breaks.
+
+In a real deployment (`app1.com` framing `app2.com`, IdP at `auth.example.com`),
+everything the iframe depends on becomes a **third-party cookie**:
+
+1. **Silent SSO breaks.** The iframe's `prompt=none` request to FusionAuth needs
+   FusionAuth's session cookie. Cross-site iframe → that cookie is third-party →
+   blocked/partitioned → FusionAuth sees no session → returns its login page →
+   `X-Frame-Options: DENY` → blank frame.
+2. **The embedded app can't even keep its own session.** A `SameSite=Lax` cookie (this
+   PoC) is *not sent at all* on a cross-site embedded request. You'd need
+   `SameSite=None; Secure` — precisely the third-party cookie browsers are removing.
+
+**Browser status:** Safari (ITP) already blocks third-party cookies; Firefox partitions
+them; Chrome is phasing them out. So cross-domain iframe SSO degrades from flaky to dead.
+
+### Alternatives (what to actually use)
+
+The fix is to make the IdP request run **top-level / first-party** instead of embedded:
+
+| Approach | How | Works cross-domain? |
+| --- | --- | --- |
+| **Separate tab / window** | Open App 2 in its own tab (`target="_blank"` or `window.open`). It's a top-level context, so its cookies to FusionAuth are first-party. | ✅ Yes |
+| **Full-page redirect** | Standard OIDC: navigate the whole page to `/authorize`, come back to the callback. | ✅ Yes (the default flow) |
+| **Popup + `postMessage`** | Open the IdP in a popup, popup posts the result back to the opener. Login "without leaving the page". | ✅ Yes |
+| **Storage Access API** | Iframe calls `document.requestStorageAccess()` to use its own cookies — needs a prior user gesture. | ⚠️ Partial / clunky |
+| **CHIPS (partitioned cookies)** | `Partitioned` cookie attribute. | ❌ Not for SSO — the session is partitioned *per top site*, so it isn't shared across apps |
+| **Same registrable domain** | Put both apps on subdomains of one domain (`a.corp.com`, `b.corp.com`) or behind one reverse proxy, with `SameSite=None`. | ✅ Yes, but requires you to own/control the domain layout |
+
+> **Does opening another tab help? Yes.** A new tab (like a full-page redirect or a
+> popup) is a *top-level* browsing context. When it hits FusionAuth, FusionAuth's
+> session cookie is first-party to the IdP's own domain, so it's always sent — no
+> third-party-cookie problem. This is exactly why every real SSO flow navigates the page
+> (or opens a popup) to the IdP and **never** uses an iframe for the login step.
+
+**Rule of thumb:** an iframe is fine for embedding an app the user is *already* signed
+into on the *same site*. It is the wrong tool for cross-domain SSO.
+
+### ⚠️ Logout is not propagated (single-logout gap)
+
+Logging out of App 1 ends the *FusionAuth SSO session* and App 1's own session, but **App
+2's local session survives** — App 2 keeps showing "signed in" until its own session
+expires or it re-checks FusionAuth. This PoC implements no logout propagation. Real
+single-logout needs **OIDC Back-Channel Logout** (FusionAuth POSTs a logout token to each
+app, which kills the matching local session) or Front-Channel Logout (subject to the same
+framing/cookie caveats above).
 
 ## Config reference
 

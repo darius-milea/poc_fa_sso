@@ -207,6 +207,52 @@ to the login page. Single logout across different domains. ✅
   `error=login_required` — see the caveat in §3), which is the "you've been logged out"
   state here.
 
+## FusionAuth: components & APIs used
+
+### Objects provisioned (all by kickstart, `kickstart/kickstart.json`)
+
+| Object | What / why |
+| --- | --- |
+| **Tenant** | The default tenant (token issuer is `acme.com` — FusionAuth's default; we don't validate `iss`). |
+| **API key** | Bootstrap key so kickstart can call the Management API on first boot. |
+| **Applications ×2** | "SSO Demo App 1" / "App 2". Each *is* an OIDC client: the application ID is the `client_id`, plus a `client_secret`. |
+| **User + Registrations** | One test user (`user@example.com`) registered to both apps; an admin registered to the built-in FusionAuth app. A **registration** is what links a user to an application. |
+
+### Per-application OAuth configuration (the fields that matter here)
+
+| Field | Value | Why |
+| --- | --- | --- |
+| `enabledGrants` | `authorization_code`, `refresh_token` | Enables the Authorization Code flow. |
+| `authorizedRedirectURLs` | each app's `/oauth-callback` | FusionAuth only redirects back to registered URLs. |
+| `logoutURL` | each app's home | Where `/oauth2/logout` returns the browser. |
+| `logoutBehavior` | `AllApplications` | One logout ends the shared SSO session for all apps. |
+| `proofKeyForCodeExchangePolicy` | `NotRequired` | PKCE optional server-side; the apps send it anyway. |
+| `generateRefreshTokens` | `true` | Refresh tokens issued (see "not used" below). |
+
+### Runtime OIDC/OAuth2 endpoints (hit by the apps on every login)
+
+| Endpoint | Used for |
+| --- | --- |
+| `GET /.well-known/openid-configuration` | Discovery — how we checked `backchannel_logout_supported`. |
+| `GET /oauth2/authorize` | Start Authorization Code flow; `code_challenge` (PKCE S256); `prompt=none` for silent SSO and logout re-validation. |
+| `POST /oauth2/token` | Exchange the authorization code for tokens (`client_secret` + `code_verifier`). |
+| `GET /oauth2/userinfo` | Fetch the user claims (`sub`, `email`, name) with the access token. |
+| `GET /oauth2/logout` | End the FusionAuth SSO session (the OIDC `end_session_endpoint`). |
+
+### Management (provisioning) APIs — called once by kickstart
+
+| API | Used for |
+| --- | --- |
+| `apiKeys` (kickstart block) | Create the bootstrap API key. |
+| `POST /api/application/{id}` | Create the two OIDC applications with the OAuth config above. |
+| `POST /api/user/registration` / `POST /api/user/registration/{userId}` | Create the admin + test user and register them to the apps. |
+| `GET /api/status`, `GET /api/application`, `GET /api/user/search` | (verification only, via `curl`) — confirm boot + provisioning. |
+
+### Flow & features exercised vs. deliberately not
+
+- **Used:** OIDC Authorization Code + **PKCE (S256)**; scopes `openid profile email offline_access`; **silent auth (`prompt=none`)** for seamless SSO and single-logout re-validation; the shared FusionAuth **SSO session cookie** (first-party to `auth.lacolhost.com`) — the actual basis of SSO; `logoutBehavior=AllApplications` + `/oauth2/logout` for logout.
+- **Not used:** **refresh tokens** (`offline_access` is requested and issuing is enabled, but the apps never redeem the refresh token — sessions are server-side); **JWKS / local `id_token` signature validation** (the apps call `/oauth2/userinfo` instead of verifying the JWT with `jwks_uri`); **back-channel logout** (`backchannel_logout_supported: false`).
+
 ## Config reference
 
 | App   | Host | Client ID                              | Redirect URI                        |

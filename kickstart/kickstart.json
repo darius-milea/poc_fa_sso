@@ -41,8 +41,8 @@
           "oauthConfiguration": {
             "clientSecret": "#{app1Secret}",
             "enabledGrants": ["authorization_code", "refresh_token"],
-            "authorizedRedirectURLs": ["http://localhost:3000/oauth-callback"],
-            "logoutURL": "http://localhost:3000/",
+            "authorizedRedirectURLs": ["http://app1.localtest.me:3000/oauth-callback"],
+            "logoutURL": "http://app1.localtest.me:3000/",
             "requireRegistration": false,
             "generateRefreshTokens": true
           }
@@ -58,8 +58,8 @@
           "oauthConfiguration": {
             "clientSecret": "#{app2Secret}",
             "enabledGrants": ["authorization_code", "refresh_token"],
-            "authorizedRedirectURLs": ["http://localhost:3001/oauth-callback"],
-            "logoutURL": "http://localhost:3001/",
+            "authorizedRedirectURLs": ["http://app2.lvh.me:3001/oauth-callback"],
+            "logoutURL": "http://app2.lvh.me:3001/",
             "requireRegistration": false,
             "generateRefreshTokens": true
           }

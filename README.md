@@ -4,19 +4,27 @@ Proof of concept for Single Sign-On with [FusionAuth](https://fusionauth.io/) as
 identity provider. Two independent web apps share one FusionAuth session: log in to
 **App 1**, then open **App 2** and you're already authenticated — no second login.
 
+The apps and the IdP run on **three genuinely different domains** (not just different
+ports on `localhost`), so this demonstrates *real cross-domain SSO*, not a same-site
+shortcut.
+
 ## Architecture
 
 ```
-                ┌────────────────────┐
-   browser ───► │  FusionAuth (9011) │ ◄── OIDC Authorization Code + PKCE
-                │  + PostgreSQL      │
-                └────────────────────┘
-                     ▲          ▲
-        OIDC login   │          │  OIDC login
-                ┌────┴───┐  ┌───┴────┐
-                │ App 1  │  │ App 2  │
-                │ :3000  │  │ :3001  │
-                └────────┘  └────────┘
+                    ┌──────────────────────────────┐
+   browser ───────► │  FusionAuth (the IdP)        │ ◄── OIDC Authorization Code + PKCE
+                    │  auth.lacolhost.com:9011      │
+                    │  + PostgreSQL                 │
+                    └──────────────────────────────┘
+                         ▲                    ▲
+       top-level login   │                    │  top-level login (new tab)
+              ┌──────────┴─────────┐  ┌───────┴──────────────┐
+              │ App 1              │  │ App 2                │
+              │ app1.localtest.me  │  │ app2.lvh.me          │
+              │ :3000              │  │ :3001                │
+              └────────────────────┘  └──────────────────────┘
+            (registrable domain      (registrable domain
+             localtest.me)            lvh.me → cross-site!)
 ```
 
 - **FusionAuth + Postgres** run in Docker Compose.
@@ -25,11 +33,32 @@ identity provider. Two independent web apps share one FusionAuth session: log in
 - **Both apps** are the *same* Express server (`app/server.js`) launched twice with
   different env files. Each runs the OIDC Authorization Code flow with PKCE by hand
   (no client lib) so the mechanics are visible.
+- **App 1 → App 2 is a new-tab link, not an iframe.** A new tab is a *top-level*
+  browsing context, so its requests to FusionAuth are first-party — which is what makes
+  cross-domain SSO work. (See "iframe vs new tab" below for why the iframe doesn't.)
+
+## Hosts (zero setup)
+
+The three hostnames are public wildcard-DNS names that all resolve to `127.0.0.1`, on
+**three different registrable domains** so they are genuinely cross-site:
+
+| Role | Host | Registrable domain |
+| --- | --- | --- |
+| App 1 | `app1.localtest.me:3000` | `localtest.me` |
+| App 2 | `app2.lvh.me:3001` | `lvh.me` |
+| FusionAuth (IdP) | `auth.lacolhost.com:9011` | `lacolhost.com` |
+
+No `/etc/hosts` edits needed — they resolve out of the box (needs internet for DNS). If
+you're offline, add them to `/etc/hosts` pointing at `127.0.0.1` instead.
+
+Plain HTTP is fine here: every cross-domain hop is a **top-level navigation**, so
+`SameSite=Lax` cookies are sent and no HTTPS / `SameSite=None` is required.
 
 ## Prerequisites
 
 - Docker + Docker Compose
 - Node.js 20+ (for `--env-file` support and global `fetch`)
+- Internet access (for the wildcard-DNS hostnames to resolve to `127.0.0.1`)
 
 ## 1. Start FusionAuth
 
@@ -43,30 +72,31 @@ First boot takes ~30–60s (DB migration + kickstart). Watch readiness:
 docker compose logs -f fusionauth
 ```
 
-Admin console: <http://localhost:9011>  ·  login `admin@example.com` / `password`
+Admin console: <http://auth.lacolhost.com:9011>  ·  login `admin@example.com` / `password`
 
 ## 2. Start the two demo apps
 
 ```bash
 cd app
 npm install
-npm run app1   # http://localhost:3000
+npm run app1   # http://app1.localtest.me:3000
 ```
 
 In a second terminal:
 
 ```bash
 cd app
-npm run app2   # http://localhost:3001
+npm run app2   # http://app2.lvh.me:3001
 ```
 
 ## 3. Try SSO
 
-1. Open <http://localhost:3000> → click **Log in with FusionAuth**.
-2. Sign in as `user@example.com` / `password`.
+1. Open <http://app1.localtest.me:3000> → click **Log in with FusionAuth**.
+2. Sign in as `user@example.com` / `password` (on `auth.lacolhost.com`).
 3. You land back on App 1, authenticated (ID-token claims shown).
-4. Open <http://localhost:3001> — **no button, no login screen**. App 2 signs you in
-   automatically. That's real SSO: one login, both apps.
+4. Click **Open App 2 in a new tab ↗**. App 2 (`app2.lvh.me`, a *different* domain)
+   signs you in **automatically — no button, no login screen**. That's real cross-domain
+   SSO: one login, both apps.
 5. **Log out** from an app ends the FusionAuth SSO session and that app's own session —
    but **not** the other app's local session (see the single-logout gap below).
 
@@ -92,80 +122,56 @@ page with a login button — it's the entry point where you actually authenticat
 | Admin console  | `admin@example.com` | `password` |
 | SSO test user  | `user@example.com`  | `password` |
 
-## 4. Iframe SSO behavior
+## 4. iframe vs new tab (the whole point)
 
-App 1's home page embeds App 2 in an `<iframe>` (driven by `EMBED_APP_URL` in
-`app1.env`). This surfaces the classic embedded-SSO trade-offs:
+App 1 shows App 2 via an **`EMBED_MODE`** toggle (`app1.env`):
 
-- **App 2's own pages frame fine** — the Express app sets no `X-Frame-Options`.
-- **Silent SSO works inside the iframe.** With `AUTO_SSO` on, the embedded App 2 fires a
-  `prompt=none` request on load; if FusionAuth already has a session it returns a code
-  with **no login page to render**, so the iframe logs in with zero user interaction.
-  All three origins are `localhost` (cookies ignore port), so they're the *same site* —
-  the FusionAuth session cookie is sent into the frame. Observed: after logging into
-  App 1, its embedded App 2 shows "Signed in as user@example.com" with no button.
-- **Interactive login inside the iframe is blocked.** FusionAuth's hosted login page
-  returns `X-Frame-Options: DENY`. So when **no** session exists, the iframe's silent
-  attempt renders the login page → browser refuses to frame it → blank frame. An
-  embedded app can therefore *only* SSO silently; it can never show the FusionAuth login
-  form in-frame.
+- `EMBED_MODE=tab` (**default**) — an **"Open App 2 in a new tab ↗"** button
+  (`target="_blank"`). A new tab is a *top-level, first-party* context.
+- `EMBED_MODE=iframe` — App 2 embedded in an `<iframe>`, a *third-party* context.
 
-### ⛔ This iframe pattern does NOT work in production
+Because the apps are on **different registrable domains**, the two modes now behave
+**differently** (unlike a same-`localhost` setup, where both would "work"):
 
-**It only works here because every origin is `localhost`.** Cookies are keyed by host
-(they ignore port), so `localhost:3000`, `:3001`, and `:9011` are all the *same site* →
-every cookie is first-party. Change any of them to a real, different domain and it breaks.
+### ✅ New tab — works cross-domain
 
-In a real deployment (`app1.com` framing `app2.com`, IdP at `auth.example.com`),
-everything the iframe depends on becomes a **third-party cookie**:
+The new tab navigates top-level to App 2 → App 2 does `prompt=none` → top-level redirect
+to FusionAuth. FusionAuth's session cookie is **first-party** to `auth.lacolhost.com`, so
+it's sent; FusionAuth returns a code with no UI; App 2 logs in silently. **Verified:**
+logged into App 1 on `app1.localtest.me`, opened App 2 on `app2.lvh.me`, signed in with
+no button and the same `sub`.
+
+### ⛔ iframe — breaks cross-domain
+
+Set `EMBED_MODE=iframe` and restart App 1 to see it. Now everything the iframe needs is a
+**third-party cookie**:
 
 1. **Silent SSO breaks.** The iframe's `prompt=none` request to FusionAuth needs
-   FusionAuth's session cookie. Cross-site iframe → that cookie is third-party →
+   FusionAuth's session cookie. In a cross-site iframe that cookie is third-party →
    blocked/partitioned → FusionAuth sees no session → returns its login page →
    `X-Frame-Options: DENY` → blank frame.
-2. **The embedded app can't even keep its own session.** A `SameSite=Lax` cookie (this
-   PoC) is *not sent at all* on a cross-site embedded request. You'd need
-   `SameSite=None; Secure` — precisely the third-party cookie browsers are removing.
+2. **App 2 can't keep its own session.** App 2's `SameSite=Lax` cookie isn't sent on a
+   cross-site *embedded* request (Lax only rides top-level navigations). You'd need
+   `SameSite=None; Secure` — exactly the third-party cookie browsers are killing.
 
-**Browser status:** Safari (ITP) already blocks third-party cookies; Firefox partitions
-them; Chrome is phasing them out. So cross-domain iframe SSO degrades from flaky to dead.
+**Browser status:** Safari (ITP) blocks third-party cookies; Firefox partitions them;
+Chrome is phasing them out. So cross-domain iframe SSO ranges from flaky to dead — which
+is why the **default is `tab`**.
 
-### Alternatives (what to actually use)
-
-The fix is to make the IdP request run **top-level / first-party** instead of embedded:
+### Alternatives (all make the IdP request top-level / first-party)
 
 | Approach | How | Works cross-domain? |
 | --- | --- | --- |
-| **Separate tab / window** | Open App 2 in its own tab (`target="_blank"` or `window.open`). It's a top-level context, so its cookies to FusionAuth are first-party. | ✅ Yes |
-| **Full-page redirect** | Standard OIDC: navigate the whole page to `/authorize`, come back to the callback. | ✅ Yes (the default flow) |
+| **Separate tab / window** (this PoC's default) | `target="_blank"` / `window.open`. Top-level, so cookies to FusionAuth are first-party. | ✅ Yes |
+| **Full-page redirect** | Standard OIDC: navigate the whole page to `/authorize`, back to the callback. | ✅ Yes (the default flow) |
 | **Popup + `postMessage`** | Open the IdP in a popup, popup posts the result back to the opener. Login "without leaving the page". | ✅ Yes |
-| **Storage Access API** | Iframe calls `document.requestStorageAccess()` to use its own cookies — needs a prior user gesture. | ⚠️ Partial / clunky |
-| **CHIPS (partitioned cookies)** | `Partitioned` cookie attribute. | ❌ Not for SSO — the session is partitioned *per top site*, so it isn't shared across apps |
-| **Same registrable domain** | Put both apps on subdomains of one domain (`a.corp.com`, `b.corp.com`) or behind one reverse proxy, with `SameSite=None`. | ✅ Yes, but requires you to own/control the domain layout |
-
-> **Does opening another tab help? Yes.** A new tab (like a full-page redirect or a
-> popup) is a *top-level* browsing context. When it hits FusionAuth, FusionAuth's
-> session cookie is first-party to the IdP's own domain, so it's always sent — no
-> third-party-cookie problem. This is exactly why every real SSO flow navigates the page
-> (or opens a popup) to the IdP and **never** uses an iframe for the login step.
+| **Storage Access API** | Iframe calls `document.requestStorageAccess()` to use its cookies — needs a prior user gesture. | ⚠️ Partial / clunky |
+| **CHIPS (partitioned cookies)** | `Partitioned` cookie attribute. | ❌ Not for SSO — session partitioned *per top site*, so it isn't shared across apps |
+| **Same registrable domain** | Put both apps on subdomains of one domain + `SameSite=None`. | ✅ Yes, but requires you to control the domain layout |
 
 **Rule of thumb:** an iframe is fine for embedding an app the user is *already* signed
-into on the *same site*. It is the wrong tool for cross-domain SSO.
-
-#### Try both in the PoC: `EMBED_MODE`
-
-App 1 has an `EMBED_MODE` toggle (`app1.env`):
-
-- `EMBED_MODE=iframe` (default) — App 2 rendered in an `<iframe>`.
-- `EMBED_MODE=tab` — App 2 shown as an **"Open App 2 in a new tab"** button
-  (`target="_blank"`), the top-level / first-party pattern.
-
-> **Important:** on `localhost` **both modes behave identically** — silent SSO works
-> either way, because every origin is same-site so cookies are first-party regardless.
-> This toggle exists to show the two *code patterns* side by side. To actually *observe*
-> the iframe breaking while the tab keeps working, you need real, different domains over
-> HTTPS with `SameSite=None` cookies — which this localhost PoC deliberately doesn't set
-> up. The `tab` mode is what you'd ship; the `iframe` mode is the teaching artifact.
+into on the *same site*. It is the wrong tool for cross-domain SSO — use a tab, redirect,
+or popup so the login runs top-level.
 
 ### ⚠️ Logout is not propagated (single-logout gap)
 
@@ -178,10 +184,14 @@ framing/cookie caveats above).
 
 ## Config reference
 
-| App   | Port | Client ID                              | Redirect URI                        |
+| App   | Host | Client ID                              | Redirect URI                        |
 | ----- | ---- | -------------------------------------- | ----------------------------------- |
-| App 1 | 3000 | `11111111-1111-1111-1111-111111111111` | `http://localhost:3000/oauth-callback` |
-| App 2 | 3001 | `22222222-2222-2222-2222-222222222222` | `http://localhost:3001/oauth-callback` |
+| App 1 | `app1.localtest.me:3000` | `11111111-1111-1111-1111-111111111111` | `http://app1.localtest.me:3000/oauth-callback` |
+| App 2 | `app2.lvh.me:3001` | `22222222-2222-2222-2222-222222222222` | `http://app2.lvh.me:3001/oauth-callback` |
+
+Each app's host/redirect is set via `BASE_URL` (and `OTHER_APP_URL`) in its env file;
+FusionAuth's URL via `FUSIONAUTH_URL`. Change these + the kickstart
+`authorizedRedirectURLs`/`logoutURL` to point at your own domains.
 
 ## Reset
 
@@ -194,6 +204,7 @@ docker compose down -v   # wipes DB volume; next `up` re-runs kickstart
 Hardcoded secrets, in-memory session store, plaintext DB creds, `development`
 runtime mode, DB search engine. Do **not** ship any of this to production.
 
-> **Note:** both apps run on `localhost`, and cookies ignore port — so each app uses a
-> distinct session cookie name (`sso_sid_<port>`) to avoid clobbering the other's
-> session (which would sign you out on refresh).
+> **Note:** each app uses a distinct session cookie name (`sso_sid_<port>`). This
+> mattered on the old same-`localhost` setup (cookies ignore port, so a shared name got
+> clobbered); on separate domains they're isolated anyway, but the distinct names are
+> kept so the localhost fallback still behaves.

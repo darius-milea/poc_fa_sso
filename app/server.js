@@ -9,6 +9,11 @@ const {
   CLIENT_SECRET,
   FUSIONAUTH_URL = "http://localhost:9011",
   SESSION_SECRET = "change-me",
+  // Public base URL of THIS app (scheme + host + port), used to build the OAuth
+  // redirect URI. Lets each app run on its own real hostname, not just localhost.
+  BASE_URL = `http://localhost:${PORT}`,
+  // Public base URL of the OTHER app (for the cross-app link / new-tab button).
+  OTHER_APP_URL = "",
   EMBED_APP_URL = "",
   EMBED_MODE = "iframe", // "iframe" (embed) or "tab" (open in a new top-level tab)
   AUTO_SSO = "",
@@ -19,7 +24,7 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
   process.exit(1);
 }
 
-const REDIRECT_URI = `http://localhost:${PORT}/oauth-callback`;
+const REDIRECT_URI = `${BASE_URL}/oauth-callback`;
 const AUTHORIZE_URL = `${FUSIONAUTH_URL}/oauth2/authorize`;
 const TOKEN_URL = `${FUSIONAUTH_URL}/oauth2/token`;
 const USERINFO_URL = `${FUSIONAUTH_URL}/oauth2/userinfo`;
@@ -76,24 +81,21 @@ const embedSection = () => {
        </div>`;
   }
   return `<div class="embed">
-         <h3>Embedded app (iframe) — SSO behavior</h3>
+         <h3>Embedded app (iframe) — third-party context</h3>
          <p class="hint">Below is <code>${EMBED_APP_URL}</code> rendered in an iframe.
-            It signs in automatically via silent auth (<code>prompt=none</code>) when a
-            FusionAuth session exists — no button, no login UI, so no
-            <code>X-Frame-Options</code> framing problem. With no session it just shows
-            its login button (interactive login can't render in-frame: the hosted login
-            page is <code>X-Frame-Options: DENY</code>).<br><br>
-            ⚠️ This works <em>only</em> because everything is <code>localhost</code>
-            (same site). Cross-domain, the iframe's cookies to FusionAuth are third-party
-            and get blocked — set <code>EMBED_MODE=tab</code> for the production-safe
-            pattern.</p>
+            ⚠️ When App 2 is on a <strong>different domain</strong> (as here), the frame's
+            cookies to FusionAuth are third-party — blocked/partitioned — so silent SSO
+            fails and the frame comes up blank (FusionAuth's login page is
+            <code>X-Frame-Options: DENY</code>). It only "works" when everything is the
+            same site (e.g. all <code>localhost</code>). Use <code>EMBED_MODE=tab</code>
+            (top-level, first-party) for the production-safe pattern.</p>
          <iframe src="${EMBED_APP_URL}" title="Embedded app"></iframe>
        </div>`;
 };
 
 // Home: show login state
 app.get("/", (req, res) => {
-  const other = PORT == 3000 ? "http://localhost:3001" : "http://localhost:3000";
+  const other = OTHER_APP_URL || (PORT == 3000 ? "http://localhost:3001" : "http://localhost:3000");
   if (req.session.user) {
     res.send(
       page(

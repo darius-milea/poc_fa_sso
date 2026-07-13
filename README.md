@@ -152,6 +152,21 @@ The fix is to make the IdP request run **top-level / first-party** instead of em
 **Rule of thumb:** an iframe is fine for embedding an app the user is *already* signed
 into on the *same site*. It is the wrong tool for cross-domain SSO.
 
+#### Try both in the PoC: `EMBED_MODE`
+
+App 1 has an `EMBED_MODE` toggle (`app1.env`):
+
+- `EMBED_MODE=iframe` (default) — App 2 rendered in an `<iframe>`.
+- `EMBED_MODE=tab` — App 2 shown as an **"Open App 2 in a new tab"** button
+  (`target="_blank"`), the top-level / first-party pattern.
+
+> **Important:** on `localhost` **both modes behave identically** — silent SSO works
+> either way, because every origin is same-site so cookies are first-party regardless.
+> This toggle exists to show the two *code patterns* side by side. To actually *observe*
+> the iframe breaking while the tab keeps working, you need real, different domains over
+> HTTPS with `SameSite=None` cookies — which this localhost PoC deliberately doesn't set
+> up. The `tab` mode is what you'd ship; the `iframe` mode is the teaching artifact.
+
 ### ⚠️ Logout is not propagated (single-logout gap)
 
 Logging out of App 1 ends the *FusionAuth SSO session* and App 1's own session, but **App

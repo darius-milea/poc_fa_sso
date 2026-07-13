@@ -10,6 +10,7 @@ const {
   FUSIONAUTH_URL = "http://localhost:9011",
   SESSION_SECRET = "change-me",
   EMBED_APP_URL = "",
+  EMBED_MODE = "iframe", // "iframe" (embed) or "tab" (open in a new top-level tab)
   AUTO_SSO = "",
 } = process.env;
 
@@ -56,20 +57,39 @@ const page = (title, body) => `<!doctype html>
   .embed .hint{font-size:.85rem;color:#666}
 </style></head><body><div class="card">${body}</div></body></html>`;
 
-// Optional embedded second app (SSO-in-iframe demo). App 1 sets EMBED_APP_URL.
-const embedSection = () =>
-  EMBED_APP_URL
-    ? `<div class="embed">
+// Optional second-app demo. App 1 sets EMBED_APP_URL. EMBED_MODE picks how it's shown:
+//   iframe → embed App 2 in an <iframe> (third-party context when cross-domain)
+//   tab    → an "open in a new tab" button (top-level, first-party context)
+// On localhost both behave the same (same-site cookies). The difference only appears
+// cross-domain: the iframe's cookies to FusionAuth become third-party and get blocked,
+// while a new tab stays first-party and keeps working. See README.
+const embedSection = () => {
+  if (!EMBED_APP_URL) return "";
+  if (EMBED_MODE === "tab") {
+    return `<div class="embed">
+         <h3>Second app — open in a new tab (SSO-safe pattern)</h3>
+         <p class="hint">Opens <code>${EMBED_APP_URL}</code> in a new tab — a
+            <strong>top-level</strong> browsing context. Its requests to FusionAuth are
+            first-party, so silent SSO (<code>prompt=none</code>) works even across
+            different domains. This is the pattern to use in production; an iframe is not.</p>
+         <a class="btn" href="${EMBED_APP_URL}" target="_blank" rel="noopener">Open App 2 in a new tab ↗</a>
+       </div>`;
+  }
+  return `<div class="embed">
          <h3>Embedded app (iframe) — SSO behavior</h3>
          <p class="hint">Below is <code>${EMBED_APP_URL}</code> rendered in an iframe.
             It signs in automatically via silent auth (<code>prompt=none</code>) when a
             FusionAuth session exists — no button, no login UI, so no
             <code>X-Frame-Options</code> framing problem. With no session it just shows
             its login button (interactive login can't render in-frame: the hosted login
-            page is <code>X-Frame-Options: DENY</code>).</p>
+            page is <code>X-Frame-Options: DENY</code>).<br><br>
+            ⚠️ This works <em>only</em> because everything is <code>localhost</code>
+            (same site). Cross-domain, the iframe's cookies to FusionAuth are third-party
+            and get blocked — set <code>EMBED_MODE=tab</code> for the production-safe
+            pattern.</p>
          <iframe src="${EMBED_APP_URL}" title="Embedded app"></iframe>
-       </div>`
-    : "";
+       </div>`;
+};
 
 // Home: show login state
 app.get("/", (req, res) => {
@@ -82,7 +102,9 @@ app.get("/", (req, res) => {
          <p>✅ Signed in as <strong>${req.session.user.email}</strong></p>
          <p>${
            EMBED_APP_URL
-             ? `The embedded app below signs in automatically via SSO — no button.`
+             ? EMBED_MODE === "tab"
+               ? `Use the button below to open App 2 in a new tab — it signs in automatically (SSO).`
+               : `The embedded app below signs in automatically via SSO — no button.`
              : `Open <a href="${other}">the other app</a> — it signs you in automatically (SSO).`
          }</p>
          <h3>ID token claims</h3>

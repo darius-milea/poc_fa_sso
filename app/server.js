@@ -10,6 +10,7 @@ const {
   FUSIONAUTH_URL = "http://localhost:9011",
   SESSION_SECRET = "change-me",
   EMBED_APP_URL = "",
+  AUTO_SSO = "",
 } = process.env;
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
@@ -61,10 +62,11 @@ const embedSection = () =>
     ? `<div class="embed">
          <h3>Embedded app (iframe) — SSO behavior</h3>
          <p class="hint">Below is <code>${EMBED_APP_URL}</code> rendered in an iframe.
-            If FusionAuth already has a session, the embedded app logs in silently.
-            If it needs the hosted login page, the browser blocks it from framing
-            (<code>X-Frame-Options</code> / <code>frame-ancestors</code>) — that's the
-            key iframe-SSO caveat. Open devtools console to see the framing error.</p>
+            It signs in automatically via silent auth (<code>prompt=none</code>) when a
+            FusionAuth session exists — no button, no login UI, so no
+            <code>X-Frame-Options</code> framing problem. With no session it just shows
+            its login button (interactive login can't render in-frame: the hosted login
+            page is <code>X-Frame-Options: DENY</code>).</p>
          <iframe src="${EMBED_APP_URL}" title="Embedded app"></iframe>
        </div>`
     : "";
@@ -78,29 +80,50 @@ app.get("/", (req, res) => {
         APP_NAME,
         `<h1>${APP_NAME}</h1>
          <p>✅ Signed in as <strong>${req.session.user.email}</strong></p>
-         <p>Now open <a href="${other}">the other app</a> — you'll be logged in automatically (SSO).</p>
+         <p>${
+           EMBED_APP_URL
+             ? `The embedded app below signs in automatically via SSO — no button.`
+             : `Open <a href="${other}">the other app</a> — it signs you in automatically (SSO).`
+         }</p>
          <h3>ID token claims</h3>
          <pre>${JSON.stringify(req.session.user, null, 2)}</pre>
          <a class="btn alt" href="/logout">Log out</a>
          ${embedSection()}`
       )
     );
-  } else {
-    res.send(
-      page(
-        APP_NAME,
-        `<h1>${APP_NAME}</h1>
-         <p>🔒 Not signed in.</p>
-         <a class="btn" href="/login">Log in with FusionAuth</a>
-         <p style="margin-top:1rem">Other app: <a href="${other}">${other}</a></p>
-         ${embedSection()}`
-      )
-    );
+    return;
   }
+
+  // Not signed in.
+  // With AUTO_SSO enabled (App 2), try SSO silently first (prompt=none): if FusionAuth
+  // already has a session this logs us in with zero clicks — no login button. We only
+  // auto-attempt once per browser session (silentTried guard) to avoid a redirect loop.
+  //
+  // NOTE: OIDC says prompt=none returns error=login_required when there's no session,
+  // which would land us on the button below. FusionAuth 1.53 instead renders its hosted
+  // login page, so with no session App 2 shows the FusionAuth login (or, in an iframe,
+  // is blocked by X-Frame-Options: DENY). The graceful fallback here works against any
+  // spec-compliant IdP; the seamless "already logged in" path works with FusionAuth too.
+  if (AUTO_SSO && !req.session.silentTried) {
+    return res.redirect("/login?silent=1");
+  }
+
+  res.send(
+    page(
+      APP_NAME,
+      `<h1>${APP_NAME}</h1>
+       <p>🔒 Not signed in.</p>
+       <a class="btn" href="/login">Log in with FusionAuth</a>
+       <p style="margin-top:1rem">Other app: <a href="${other}">${other}</a></p>
+       ${embedSection()}`
+    )
+  );
 });
 
-// Start Authorization Code + PKCE flow
+// Start Authorization Code + PKCE flow.
+// ?silent=1 adds prompt=none for a non-interactive SSO check (no login UI shown).
 app.get("/login", (req, res) => {
+  const silent = req.query.silent === "1";
   const state = base64url(crypto.randomBytes(16));
   const codeVerifier = base64url(crypto.randomBytes(32));
   const codeChallenge = base64url(
@@ -118,12 +141,24 @@ app.get("/login", (req, res) => {
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
+  if (silent) params.set("prompt", "none");
   res.redirect(`${AUTHORIZE_URL}?${params}`);
 });
 
 // OAuth callback: exchange code for tokens
 app.get("/oauth-callback", async (req, res) => {
-  const { code, state } = req.query;
+  const { code, state, error } = req.query;
+
+  // Silent SSO check failed (e.g. login_required): no active FusionAuth session.
+  // Record that we tried so the home page shows the manual login button instead of
+  // looping back into another silent attempt.
+  if (error) {
+    req.session.silentTried = true;
+    delete req.session.state;
+    delete req.session.codeVerifier;
+    return res.redirect("/");
+  }
+
   if (!code || state !== req.session.state) {
     return res.status(400).send(page("Error", "<h1>Invalid state or missing code</h1>"));
   }

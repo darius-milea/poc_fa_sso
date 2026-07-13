@@ -65,9 +65,24 @@ npm run app2   # http://localhost:3001
 1. Open <http://localhost:3000> → click **Log in with FusionAuth**.
 2. Sign in as `user@example.com` / `password`.
 3. You land back on App 1, authenticated (ID-token claims shown).
-4. Open <http://localhost:3001> → click **Log in** — FusionAuth recognizes the existing
-   session and redirects you straight back, **already logged in**. That's SSO.
+4. Open <http://localhost:3001> — **no button, no login screen**. App 2 signs you in
+   automatically. That's real SSO: one login, both apps.
 5. **Log out** from either app hits FusionAuth's OIDC logout, ending the shared session.
+
+### Why App 2 is automatic but App 1 isn't
+
+App 2 sets `AUTO_SSO=1` (`app2.env`). On landing while logged out, it immediately does a
+**silent auth** request — `/oauth2/authorize` with `prompt=none`. If FusionAuth already
+has a session (because you logged into App 1), it returns an auth code with no UI, so
+App 2 logs in with zero clicks. App 1 has `AUTO_SSO` unset, so it stays a normal landing
+page with a login button — it's the entry point where you actually authenticate.
+
+> **FusionAuth 1.53 caveat:** the OIDC spec says `prompt=none` with no session should
+> redirect back with `error=login_required` (letting the app show its own button). FusionAuth
+> instead renders its hosted login page. So the app's graceful "no session → show button"
+> fallback works against a spec-compliant IdP, but with FusionAuth an `AUTO_SSO` app with
+> **no** existing session lands the user on the FusionAuth login page (or, in an iframe, a
+> blank frame — see below). The seamless "already logged in" path works with FusionAuth.
 
 ## Seeded credentials
 
@@ -82,17 +97,17 @@ App 1's home page embeds App 2 in an `<iframe>` (driven by `EMBED_APP_URL` in
 `app1.env`). This surfaces the classic embedded-SSO trade-offs:
 
 - **App 2's own pages frame fine** — the Express app sets no `X-Frame-Options`.
-- **Silent SSO works inside the iframe.** If FusionAuth already has a session, the
-  embedded app's `/login` → `/oauth2/authorize` returns a code with **no login page to
-  render**, so the iframe logs in with zero user interaction. All three origins are
-  `localhost` (cookies ignore port), so they're the *same site* — the FusionAuth
-  session cookie is sent into the frame. Observed: App 2 shows "Signed in as
-  user@example.com" inside the iframe while App 1 (top window) is still logged out.
+- **Silent SSO works inside the iframe.** With `AUTO_SSO` on, the embedded App 2 fires a
+  `prompt=none` request on load; if FusionAuth already has a session it returns a code
+  with **no login page to render**, so the iframe logs in with zero user interaction.
+  All three origins are `localhost` (cookies ignore port), so they're the *same site* —
+  the FusionAuth session cookie is sent into the frame. Observed: after logging into
+  App 1, its embedded App 2 shows "Signed in as user@example.com" with no button.
 - **Interactive login inside the iframe is blocked.** FusionAuth's hosted login page
-  returns `X-Frame-Options: DENY`. When no session exists, the browser refuses to
-  render the login page in the frame (and FusionAuth's page busts out to the top
-  window). So an embedded app can *only* SSO silently — it can never show the
-  FusionAuth login form in-frame.
+  returns `X-Frame-Options: DENY`. So when **no** session exists, the iframe's silent
+  attempt renders the login page → browser refuses to frame it → blank frame. An
+  embedded app can therefore *only* SSO silently; it can never show the FusionAuth login
+  form in-frame.
 
 **Takeaways for real deployments:**
 
